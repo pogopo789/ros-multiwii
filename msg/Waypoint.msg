@@ -1,0 +1,9 @@
+uint8 wp_no
+uint8 action
+uint32 lat
+uint32 lon
+uint32 alt
+uint16 p1
+uint16 p2
+uint16 p3
+uint8 nav_flag

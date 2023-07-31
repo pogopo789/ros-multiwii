@@ -2,6 +2,8 @@
 
 #include <dynamic_reconfigure/server.h>
 #include <multiwii/UpdateRatesConfig.h>
+#include <multiwii/Waypoint.h>
+#include <multiwii/Waypoints.h>
 
 #include <std_msgs/UInt16.h>
 #include <std_msgs/UInt32.h>
@@ -12,8 +14,11 @@
 #include <geometry_msgs/PoseStamped.h>
 #include <geometry_msgs/Vector3.h>
 
+#include <nav_msgs/Odometry.h>
+
 #include <sensor_msgs/BatteryState.h>
 #include <sensor_msgs/Imu.h>
+#include <sensor_msgs/NavSatFix.h>
 #include <sensor_msgs/MagneticField.h>
 
 #include <mavros_msgs/RCIn.h>
@@ -52,6 +57,8 @@ private:
 
     ros::Publisher imu_pub;
     ros::Publisher magn_pub;
+    ros::Publisher odom_pub;
+    ros::Publisher gps_pub;
     ros::Publisher pose_stamped_pub;
     ros::Publisher rpy_pub;
     ros::Publisher rc_in_pub, servo_pub;
@@ -62,11 +69,17 @@ private:
     ros::Publisher altitude_pub;
     ros::Publisher sonar_altitude_pub;
 
-    ros::Subscriber rc_in_sub;
-    ros::Subscriber rc_in_sub2;
-    ros::Subscriber motor_control_sub;
+    // ros::Subscriber rc_in_sub;
+    ros::Subscriber rc_sub;
+    ros::Subscriber wp_sub;
+    // ros::Subscriber motor_control_sub;
 
     tf::TransformBroadcaster tf_broadcaster;
+    tf::Transform multiwii_transform;
+    tf::Quaternion multiwii_quaternion;
+
+    std_msgs::Float64 alt_baro;
+    std_msgs::Float64 alt_sonar;
 
 public:
     MultiWiiNode() {
@@ -132,22 +145,25 @@ public:
         fcu->connect(device, uint(baudrate));
 
         // publisher
-        imu_pub = nh.advertise<sensor_msgs::Imu>("imu/data", 1);
-        magn_pub = nh.advertise<sensor_msgs::MagneticField>("imu/mag", 1);
-        pose_stamped_pub = nh.advertise<geometry_msgs::PoseStamped>("local_position/pose", 1);
-        rpy_pub = nh.advertise<geometry_msgs::Vector3>("rpy", 1);
-        rc_in_pub = nh.advertise<mavros_msgs::RCIn>("rc/in", 1);
-        servo_pub = nh.advertise<mavros_msgs::RCOut>("rc/servo", 1);
-        motors_pub = nh.advertise<mavros_msgs::RCOut>("motors", 1);
-        battery_pub = nh.advertise<sensor_msgs::BatteryState>("battery",1);
-        heading_pub = nh.advertise<std_msgs::Float64>("global_position/compass_hdg",1);
-        altitude_pub = nh.advertise<std_msgs::Float64>("global_position/rel_alt",1);
-        sonar_altitude_pub = nh.advertise<std_msgs::Float64>("global_position/sonar_alt", 1);
+        // imu_pub = nh.advertise<sensor_msgs::Imu>("imu/data", 1);
+        gps_pub = nh.advertise<sensor_msgs::NavSatFix>("gps",1);
+        // odom_pub = nh.advertise<nav_msgs::Odometry>("odom",1);
+        // magn_pub = nh.advertise<sensor_msgs::MagneticField>("imu/mag", 1);
+        // pose_stamped_pub = nh.advertise<geometry_msgs::PoseStamped>("local_position/pose", 1);
+        // rpy_pub = nh.advertise<geometry_msgs::Vector3>("rpy", 1);
+        // rc_in_pub = nh.advertise<mavros_msgs::RCIn>("rc/in", 1);
+        // servo_pub = nh.advertise<mavros_msgs::RCOut>("rc/servo", 1);
+        // motors_pub = nh.advertise<mavros_msgs::RCOut>("motors", 1);
+        // battery_pub = nh.advertise<sensor_msgs::BatteryState>("battery",1);
+        // heading_pub = nh.advertise<std_msgs::Float64>("global_position/compass_hdg",1);
+        // altitude_pub = nh.advertise<std_msgs::Float64>("global_position/rel_alt",1);
+        // sonar_altitude_pub = nh.advertise<std_msgs::Float64>("global_position/sonar_alt", 1);
 
         // subscriber
-        rc_in_sub = nh.subscribe("rc/override", 1, &MultiWiiNode::rc_override_AERT1234, this); // AERT1234
-        rc_in_sub2 = nh.subscribe("rc/override/raw", 1, &MultiWiiNode::rc_override_raw, this); // raw channel order
-        motor_control_sub = nh.subscribe("actuator_control", 1, &MultiWiiNode::motor_control, this);
+        // rc_in_sub = nh.subscribe("rc/override", 1, &MultiWiiNode::rc_override_AERT1234, this); // AERT1234
+        rc_sub = nh.subscribe("/PC_input_topic", 10, &MultiWiiNode::rc_override_raw, this); // raw channel order
+        wp_sub = nh.subscribe("/WP_input_topic", 10, &MultiWiiNode::subWPcallback, this);
+        // motor_control_sub = nh.subscribe("actuator_control", 1, &MultiWiiNode::motor_control, this);
     }
 
     /**
@@ -162,14 +178,16 @@ public:
     void dynconf_callback(multiwii::UpdateRatesConfig &config, uint32_t /*level*/) {
         // define map with matching update rate per message ID
         const std::map<msp::ID, double> msp_rates = {
-            {msp::ID::MSP_RAW_IMU, config.MSP_RAW_IMU},
-            {msp::ID::MSP_ALTITUDE, config.MSP_ALTITUDE},
+            {msp::ID::MSP2_INAV_DEBUG, config.MSP2_INAV_DEBUG},
+            // {msp::ID::MSP_RAW_IMU, config.MSP_RAW_IMU},
+            {msp::ID::MSP_RAW_GPS, config.MSP_RAW_GPS},
+            // {msp::ID::MSP_ALTITUDE, config.MSP_ALTITUDE},
             {msp::ID::MSP_ATTITUDE, config.MSP_ATTITUDE},
             {msp::ID::MSP_RC, config.MSP_RC},
-            {msp::ID::MSP_SERVO, config.MSP_SERVO},
-            {msp::ID::MSP_MOTOR, config.MSP_MOTOR},
-            {msp::ID::MSP_ANALOG, config.MSP_ANALOG},
-            {msp::ID::MSP_SONAR_ALTITUDE, config.MSP_SONAR_ALTITUDE},
+            // {msp::ID::MSP_SERVO, config.MSP_SERVO},
+            // {msp::ID::MSP_MOTOR, config.MSP_MOTOR},
+            // {msp::ID::MSP_ANALOG, config.MSP_ANALOG},
+            // {msp::ID::MSP_SONAR_ALTITUDE, config.MSP_SONAR_ALTITUDE},
         };
 
         // apply update
@@ -240,65 +258,81 @@ public:
         heading_pub.publish(heading);
     }
 
+    void onGPS(const msp::msg::RawGPS &gps){
+        ///////////////////////////////////
+        /// GPS data
+
+        sensor_msgs::NavSatFix gps_msg;
+        gps_msg.header.stamp = ros::Time::now();
+        gps_msg.header.frame_id = "multiwii";
+
+        gps_msg.latitude = gps.lat;
+        gps_msg.longitude = gps.lon;
+        gps_msg.altitude = gps.altitude;
+
+        gps_pub.publish(gps_msg);
+    } 
+
     void onAttitude(const msp::msg::Attitude &attitude) {
         // r,p,y to rotation matrix
-        Eigen::Matrix3f rot;
-        rot = Eigen::AngleAxisf(deg2rad(attitude.roll), Eigen::Vector3f::UnitX())
-            * Eigen::AngleAxisf(deg2rad(attitude.pitch),  Eigen::Vector3f::UnitY())
-            * Eigen::AngleAxisf(deg2rad(attitude.yaw), Eigen::Vector3f::UnitZ());
+        // Eigen::Matrix3f rot;
+        // rot = Eigen::AngleAxisf(deg2rad(attitude.roll), Eigen::Vector3f::UnitX())
+        //     * Eigen::AngleAxisf(deg2rad(attitude.pitch),  Eigen::Vector3f::UnitY())
+        //     * Eigen::AngleAxisf(deg2rad(attitude.yaw), Eigen::Vector3f::UnitZ());
+        // const Eigen::Quaternionf quat(rot);
+        // geometry_msgs::PoseStamped pose_stamped;
+        // pose_stamped.header.stamp = ros::Time::now();
+        // pose_stamped.header.frame_id = "multiwii";
+        // pose_stamped.pose.orientation.x = quat.x();
+        // pose_stamped.pose.orientation.y = quat.y();
+        // pose_stamped.pose.orientation.z = quat.z();
+        // pose_stamped.pose.orientation.w = quat.w();
 
-        const Eigen::Quaternionf quat(rot);
-
-        geometry_msgs::PoseStamped pose_stamped;
-        pose_stamped.header.stamp = ros::Time::now();
-        pose_stamped.header.frame_id = "multiwii";
-        pose_stamped.pose.orientation.x = quat.x();
-        pose_stamped.pose.orientation.y = quat.y();
-        pose_stamped.pose.orientation.z = quat.z();
-        pose_stamped.pose.orientation.w = quat.w();
-
-        pose_stamped_pub.publish(pose_stamped);
-
+        // pose_stamped.pose.position.x = 0;
+        // pose_stamped.pose.position.y = 0;
+        // pose_stamped.pose.position.z = alt_sonar.data;
+        // pose_stamped_pub.publish(pose_stamped);
         ///////////////////////////////////
         // Broadcast transform to relate multiwii transformation to the base frame
         // Convert attitude values to quaternion
-        tf::Quaternion multiwii_quaternion;
+        // tf::Quaternion multiwii_quaternion;
         multiwii_quaternion.setRPY(deg2rad(attitude.roll), deg2rad(attitude.pitch), deg2rad(attitude.yaw));
         // Pack attitude into tf::Transform
-        tf::Transform multiwii_transform;
+        // tf::Transform multiwii_transform;
         multiwii_transform.setRotation(multiwii_quaternion);
-        multiwii_transform.setOrigin(tf::Vector3(0.0, 0.0, 0.0));
+        // multiwii_transform.setOrigin(tf::Vector3(0.0, 0.0, alt_sonar.data));
         // Broadcast as tf::StampedTransform
-        tf_broadcaster.sendTransform(tf::StampedTransform(multiwii_transform, ros::Time::now(), "multiwii_cartesian", "multiwii"));
-
-        geometry_msgs::Vector3 rpy;
-        rpy.x = attitude.roll;
-        rpy.y = attitude.pitch;
-        rpy.z = attitude.yaw;
-        rpy_pub.publish(rpy);
+        tf_broadcaster.sendTransform(tf::StampedTransform(multiwii_transform, ros::Time::now(), "world", "base_link"));
+        // geometry_msgs::Vector3 rpy;
+        // rpy.x = attitude.roll;
+        // rpy.y = attitude.pitch;
+        // rpy.z = attitude.yaw;
+        // rpy_pub.publish(rpy);
     }
 
     void onAltitude(const msp::msg::Altitude &altitude) {
-        std_msgs::Float64 alt; // altitude in meter
-        alt.data = altitude.altitude;
-        altitude_pub.publish(alt);
+        // std_msgs::Float64 alt; // altitude in meter
+        if (altitude.altitude <0)
+            alt_baro.data = 0;
+        else
+            alt_baro.data = altitude.altitude;
+        altitude_pub.publish(alt_baro);
 
         ///////////////////////////////////
         // Broadcast transform to relate multiwii transformation to the base frame
         // Pack attitude into tf::Transform
-        tf::Quaternion multiwii_quaternion(0.0, 0.0, 0.0, 1.0);
-        tf::Transform multiwii_transform;
-        multiwii_transform.setRotation(multiwii_quaternion);
-        multiwii_transform.setOrigin(tf::Vector3(0.0, 0.0, altitude.altitude));
-        // Broadcast as tf::StampedTransform
-        tf_broadcaster.sendTransform(tf::StampedTransform(multiwii_transform, ros::Time::now(), this->tf_base_frame, "multiwii_cartesian"));
+        // tf::Quaternion multiwii_quaternion(0.0, 0.0, 0.0, 1.0);
+        // tf::Transform multiwii_transform;
+        // multiwii_transform.setRotation(multiwii_quaternion);
+        // multiwii_transform.setOrigin(tf::Vector3(0.0, 0.0, altitude.altitude));
+        // // Broadcast as tf::StampedTransform
+        // tf_broadcaster.sendTransform(tf::StampedTransform(multiwii_transform, ros::Time::now(), this->tf_base_frame, "multiwii_cartesian"));
     }
 
     void onRc(const msp::msg::Rc &rc) {
         mavros_msgs::RCIn rc_msg;
         rc_msg.header.stamp = ros::Time::now();
         rc_msg.channels = rc.channels;
-
         rc_in_pub.publish(rc_msg);
     }
 
@@ -328,19 +362,19 @@ public:
     }
 
     void onSonarAltitude(const msp::msg::SonarAltitude &sonar_altitude) {
-        std_msgs::Float64 alt;
-        alt.data = sonar_altitude.altitude_cm;
-        sonar_altitude_pub.publish(alt);
+        // std_msgs::Float64 alt;
+        alt_sonar.data = sonar_altitude.altitude_cm;
+        // sonar_altitude_pub.publish(alt_sonar);
 
         ///////////////////////////////////
         // Broadcast transform to relate multiwii transformation to the base frame
         // Pack attitude into tf::Transform
-        tf::Quaternion multiwii_quaternion(0.0, 0.0, 0.0, 1.0);
-        tf::Transform multiwii_transform;
-        multiwii_transform.setRotation(multiwii_quaternion);
-        multiwii_transform.setOrigin(tf::Vector3(0.0, 0.0, sonar_altitude.altitude_cm));
-        // Broadcast as tf::StampedTransform
-        tf_broadcaster.sendTransform(tf::StampedTransform(multiwii_transform, ros::Time::now(), this->tf_base_frame, "multiwii_cartesian"));
+        // tf::Quaternion multiwii_quaternion(0.0, 0.0, 0.0, 1.0);
+        // tf::Transform multiwii_transform;
+        // multiwii_transform.setRotation(multiwii_quaternion);
+        // multiwii_transform.setOrigin(tf::Vector3(0.0, 0.0, sonar_altitude.altitude_cm));
+        // // Broadcast as tf::StampedTransform
+        // tf_broadcaster.sendTransform(tf::StampedTransform(multiwii_transform, ros::Time::now(), this->tf_base_frame, "multiwii_cartesian"));
     }
 
 
@@ -371,7 +405,35 @@ public:
 
         fcu->setMotors(motor_values);
     }
+    
+    void onDebug(const msp::msg::INAVDebug &debug){
+        if (debug.debug2<0)
+            multiwii_transform.setOrigin(tf::Vector3((double)(debug.debug1/1000), (double)(debug.debug0/1000), 0));
+        else
+            multiwii_transform.setOrigin(tf::Vector3((double)(debug.debug1/1000), (double)(debug.debug0/1000), (double)(debug.debug2/1000)));
+        // Broadcast as tf::StampedTransform
+        tf_broadcaster.sendTransform(tf::StampedTransform(multiwii_transform, ros::Time::now(), "world", "base_link"));
+
+        // Coordinate localCartesianCoords = {(double)((float)(debug.debug1/1000)/100),(double)((float)(debug.debug0/1000)/100),debug.debug2};
+        // LatLon center = {10.77815, 106.63493}; //10.77815 106.63493
+        // LatLon LatLon = cartesianToLatLon(localCartesianCoords, center);
+        // // ROS_INFO_STREAM("LAT: "<<LatLon.latitude);
+        // // ROS_INFO("ALT: [%f]",(float)((float)(debug.debug1/1000)/100));
+        // ROS_INFO("LON: [%f]",LatLon.longitude);
+        // fcu->setGPS(LatLon.latitude,LatLon.longitude,(float)((float)(debug.debug2/1000)/100));
+    }
+
+    void subWPcallback(const multiwii::Waypoints &wp){
+        for(int count = 0; count <= wp.number_points-1; count++)
+            fcu->setWP(wp.waypoints[count].wp_no, wp.waypoints[count].action,
+                       wp.waypoints[count].lat,   wp.waypoints[count].lon,   wp.waypoints[count].alt,
+                       wp.waypoints[count].p1,    wp.waypoints[count].p2,    wp.waypoints[count].p3,    wp.waypoints[count].nav_flag);
+        fcu->saveWP();
+        fcu->writeEEPROM();
+        fcu->loadWP();
+    }
 };
+
 
 int main(int argc, char **argv) {
     ros::init(argc, argv, "MultiWii");
@@ -384,21 +446,23 @@ int main(int argc, char **argv) {
     ROS_INFO("MSP ready");
     std::cout<<"MSP ready"<<std::endl;
 
-    node.fc().subscribe(&MultiWiiNode::onImu, &node);
+    // node.fc().subscribe(&MultiWiiNode::onImu, &node);
     node.fc().subscribe(&MultiWiiNode::onAttitude, &node);
-    node.fc().subscribe(&MultiWiiNode::onAltitude, &node);
+    // node.fc().subscribe(&MultiWiiNode::onAltitude, &node);
+    node.fc().subscribe(&MultiWiiNode::onDebug, &node);
+    node.fc().subscribe(&MultiWiiNode::onGPS, &node);
     node.fc().subscribe(&MultiWiiNode::onRc, &node);
-    node.fc().subscribe(&MultiWiiNode::onServo, &node);
-    node.fc().subscribe(&MultiWiiNode::onMotor, &node);
-    node.fc().subscribe(&MultiWiiNode::onAnalog, &node);
-    node.fc().subscribe(&MultiWiiNode::onSonarAltitude, &node);
+    // node.fc().subscribe(&MultiWiiNode::onServo, &node);
+    // node.fc().subscribe(&MultiWiiNode::onMotor, &node);
+    // node.fc().subscribe(&MultiWiiNode::onAnalog, &node);
+    // node.fc().subscribe(&MultiWiiNode::onSonarAltitude, &node);
+
+    node.setDynamicConfigureCallback();
 
     // register callback for dynamic configuration
     // - update rates for MSP subscriber
     // - main ROS node loop rate
-    node.setDynamicConfigureCallback();
-
-    ros::spin();
-
-    ros::shutdown();
+    ros::AsyncSpinner spinner(6);
+    spinner.start();
+    ros::waitForShutdown();
 }

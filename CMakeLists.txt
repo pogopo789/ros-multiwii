@@ -66,6 +66,8 @@ include_directories(${Eigen_INCLUDE_DIRS})
 add_message_files(
     FILES
     MSPRawMessage.msg
+    Waypoints.msg
+    Waypoint.msg
 )
 
 ## Generate services in the 'srv' folder
